@@ -1,16 +1,19 @@
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Header, Input, DataTable, Button, Static
+from textual.widgets import Header, Input, DataTable, Button, Static, ProgressBar
 from textual.containers import Horizontal, Vertical
 
 from datetime import date
 from pathlib import Path
 
+import concurrent.futures
+
 import yt_dlp
 
 from models import DownloadJob
-from storage import load_downloads, register_search
+from storage import load_downloads, register_search, register_download
 from utils import is_playlist_url, sanitize_filename
+from downloader import descargar_mp3
 
 
 class MusicApp(App):
@@ -30,6 +33,20 @@ class MusicApp(App):
         height: 1fr;
         overflow-y: auto;
         display: none;
+        padding: 1 2;
+    }
+    .prow {
+        height: 3;
+        margin-bottom: 1;
+    }
+    .prow > Static:first-child {
+        width: 42;
+    }
+    .prow > ProgressBar {
+        width: 1fr;
+    }
+    .prow > Static:last-child {
+        width: 30;
     }
     #action-bar {
         dock: bottom;
@@ -70,6 +87,8 @@ class MusicApp(App):
         self.entries: list[dict] = []
         self.selected: set[str] = set()
         self.descargadas: set[str] = {e["url"] for e in load_downloads() if e.get("url")}
+        self._progress_widgets: dict[str, tuple[Static, ProgressBar, Static]] = {}
+        self._download_jobs: list[DownloadJob] = []
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -216,13 +235,137 @@ class MusicApp(App):
         self._toggle_row(event.cursor_row)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "quit-btn":
+        if event.button.id in ("quit-btn", "quit-summary-btn"):
             self.exit()
         elif event.button.id == "download-btn":
             self.action_start_download()
+        elif event.button.id == "new-search-btn":
+            self.action_new_search()
+
+    def _build_jobs(self) -> list[DownloadJob]:
+        jobs = []
+        for entry in self.entries:
+            url = entry.get("webpage_url")
+            if url and url in self.selected:
+                salida = self.base_salida
+                if self.artist_mode:
+                    salida = str(Path(self.base_salida).parent / sanitize_filename(self.busqueda))
+                    Path(salida).mkdir(parents=True, exist_ok=True)
+                jobs.append(DownloadJob(
+                    url=url,
+                    salida=salida,
+                    query=entry.get("title", "?"),
+                    titulo=entry.get("title", "?"),
+                    channel=entry.get("channel") or entry.get("uploader", "?"),
+                ))
+        return jobs
 
     def action_start_download(self) -> None:
+        if not self.selected:
+            return
+        jobs = self._build_jobs()
+        if not jobs:
+            return
+
+        self.query_one("#search-input").display = False
+        self.query_one("#results-table").display = False
+        self.query_one("#action-bar").display = False
+
+        progress_area = self.query_one("#progress-area")
+        progress_area.display = True
+        progress_area.remove_children()
+
+        self._progress_widgets = {}
+        self._download_jobs = jobs
+        for i, job in enumerate(jobs):
+            label = Static(job.titulo[:60])
+            bar = ProgressBar(total=100)
+            status = Static("")
+            row = Horizontal(label, bar, status, classes="prow", id=f"prow-{i}")
+            progress_area.mount(row)
+            self._progress_widgets[job.url] = (label, bar, status)
+
         self._set_status("Descargando...")
+        self.run_worker(self._run_downloads(), worker_type="thread")
+
+    def _run_downloads(self) -> None:
+        def _cb(url):
+            def _progress(d):
+                self.call_from_thread(self._update_progress, url, d)
+            return _progress
+
+        done = err = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+            fut_to_job = {}
+            for job in self._download_jobs:
+                fut = ex.submit(descargar_mp3, job.url, job.salida, _cb(job.url))
+                fut_to_job[fut] = job
+
+            for fut in concurrent.futures.as_completed(fut_to_job):
+                job = fut_to_job[fut]
+                try:
+                    fut.result()
+                    done += 1
+                    self.call_from_thread(self._mark_done, job, True)
+                except Exception as e:
+                    err += 1
+                    self.call_from_thread(self._mark_done, job, False, str(e))
+
+        self.call_from_thread(self._finish_downloads, done, err)
+
+    def _update_progress(self, url: str, d: dict) -> None:
+        widgets = self._progress_widgets.get(url)
+        if not widgets:
+            return
+        _, bar, _ = widgets
+        if d["status"] == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            if total:
+                bar.progress = d["downloaded_bytes"] / total * 100
+        elif d["status"] == "finished":
+            bar.progress = 100
+
+    def _mark_done(self, job: DownloadJob, success: bool, error: str = "") -> None:
+        widgets = self._progress_widgets.get(job.url)
+        if not widgets:
+            return
+        _, bar, status = widgets
+        if success:
+            bar.progress = 100
+            status.update("✓ Listo")
+            if job.query:
+                register_search(job.query)
+            register_download(job.url, job.titulo, job.channel, job.query)
+            self.descargadas.add(job.url)
+        else:
+            status.update(f"✗ {error}")
+
+    def _finish_downloads(self, done: int, err: int) -> None:
+        total = done + err
+        msg = f"✓ {done}/{total} completadas"
+        if err:
+            msg += f"  ✗ {err} errores"
+        self._set_status(msg)
+        progress_area = self.query_one("#progress-area")
+        progress_area.mount(
+            Horizontal(
+                Button("Nueva búsqueda", id="new-search-btn", variant="primary"),
+                Button("Salir", id="quit-summary-btn"),
+                id="summary-bar",
+            )
+        )
+
+    def action_new_search(self) -> None:
+        self.query_one("#progress-area").remove_children()
+        self.query_one("#progress-area").display = False
+        self.query_one("#search-input").display = True
+        self.query_one("#results-table").display = True
+        self.query_one("#action-bar").display = True
+        self.selected.clear()
+        self.entries = []
+        self.page_num = 0
+        self._update_table()
+        self.query_one("#search-input", Input).focus()
 
     def _search_playlist(self, url: str) -> None:
         self.call_from_thread(self._set_status, "Cargando playlist...")
