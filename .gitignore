@@ -1,0 +1,9 @@
+venv/
+downloads/
+*.mp3
+*.mp4
+*.webm
+__pycache__/
+*.pyc
+*.dat
+urls.txt
