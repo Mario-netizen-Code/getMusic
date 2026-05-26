@@ -28,8 +28,9 @@ Console tool to download YouTube audio as MP3 from a text file listing URLs.
 - **Entrypoint**: `src/main.py` (no package/module wrapper, called directly).
 - **Input format**: `urls.txt` — one URL per line, `#` for comments, lines stripped.
 - **Dependencies**: `yt-dlp`, `tqdm`, `textual`, `prompt_toolkit`, `cryptography`. Install via `requirements.txt`.
-- **`--add` mode**: full terminal UI (Textual) with DataTable, keyboard navigation (Space=toggle, a=all/none, →/←=pages with auto-fetch, Enter=download), inline help bar, live progress bars, post-download summary with "Nueva búsqueda" button. Search uses `extract_flat=True` for speed (no view counts).
-- **`--add` prefixes**: `@` = artist mode (50 results/page, download to artist subfolder); `!` = raw search (no " audio" suffix); `/` o URL de playlist = descarga playlist con checkbox.
+- **`--add` mode**: full terminal UI (Textual) with DataTable, keyboard navigation (Space=toggle, a=all/none, ↓=focus table, ↑=focus search, →/←=pages with auto-fetch, Enter=download), inline help bar, live progress bars, post-download summary with "Nueva búsqueda" button. Search uses `extract_flat=True` for speed (no view counts).
+- **Custom widget classes** (`tui_app.py`): `SearchInput(Input)` with `key_down()` to focus results table instead of cursor-to-end; `SearchResults(DataTable)` with `action_cursor_up()` that returns focus to search input at row 0 instead of no-op. Enables `↑`/`↓` navigation between search bar and results.
+- **`--add` mode selection**: tres botones (Normal / Artista / Crudo) entre el Input y la tabla; Normal añade " audio", Artista 50 results/page + subcarpeta, Crudo sin sufijo. Playlist se auto-detecta al pegar URL.
 - **Concurrent downloads** via `-j`/`--jobs` (default: 3), per-download ProgressBar widgets with speed/ETA.
 - **`extract_flat=True`** in search for near-instant results; no view counts in table.
 - **Cursor preserved** when toggling selection (table clears and rebuilds but cursor stays on same row).

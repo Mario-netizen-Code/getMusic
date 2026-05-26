@@ -32,12 +32,14 @@ python -m venv venv
 .\venv\Scripts\python src\main.py --add -j 5
 ```
 
-Full terminal UI (Textual) with DataTable, inline help bar, keyboard-driven navigation, and live progress bars.
+Full terminal UI (Textual) with DataTable, mode selector buttons (Normal / Artista / Crudo), inline help bar, keyboard-driven navigation, and live progress bars.
 
 | Key        | Action                                           |
 | ---------- | ------------------------------------------------ |
 | `Space`    | Toggle selection on current row                  |
 | `a`        | Select / deselect all                            |
+| `↓`        | Move focus from search input to results table   |
+| `↑`        | Move focus back to search input (at first row)  |
 | `→` / `←`  | Next / previous page (fetches more if needed)   |
 | `Enter`    | Download selected songs                          |
 | `Ctrl+Q`   | Quit                                             |
@@ -45,15 +47,15 @@ Full terminal UI (Textual) with DataTable, inline help bar, keyboard-driven navi
 
 Inline help bar below input shows active shortcuts.
 
-Prefixes in interactive mode:
+Mode selector before searching:
 
-| Prefix   | Example                             | Behavior                                                                                                       |
-| -------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| *(none)* | `Bohemian Rhapsody`                 | Searches with " audio" suffix, checkbox multi-select                                                           |
-| `!`      | `!Bohemian Rhapsody`                | Raw search (no suffix), checkbox multi-select                                                                  |
-| `@`      | `@Queen`                            | Artist mode — up to 50 results per page, checkbox multi-select, concurrent download to `downloads/ArtistName/` |
-| `/(URL)` | `/https://youtube.com/playlist?...` | Playlist mode — extract all videos, checkbox selection, concurrent download                                    |
-| *(URL)*  | `https://youtube.com/playlist?...`  | Auto-detected playlist — same as `/` prefix                                                                    |
+| Mode | Button    | Behavior                                                                                                     |
+| ---- | --------- | ------------------------------------------------------------------------------------------------------------ |
+| Normal | `Normal` | (default) Adds " audio" suffix to search, 5 results per page                                                 |
+| Artist | `Artista` | No suffix, up to 50 results per page, downloads to `downloads/ArtistName/` subfolder                         |
+| Raw  | `Crudo`   | Raw search (no suffix), 5 results per page                                                                   |
+
+Playlists are auto-detected — paste any playlist URL directly in the input.
 
 ### Arguments
 

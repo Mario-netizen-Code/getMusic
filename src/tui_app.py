@@ -3,6 +3,19 @@ from textual.binding import Binding
 from textual.widgets import Header, Input, DataTable, Button, Static, ProgressBar
 from textual.containers import Horizontal, Vertical
 
+
+class SearchInput(Input):
+    def key_down(self) -> None:
+        self.app.query_one("#results-table", DataTable).focus()
+
+
+class SearchResults(DataTable):
+    def action_cursor_up(self) -> None:
+        if self.cursor_row == 0:
+            self.app.query_one("#search-input", Input).focus()
+        else:
+            super().action_cursor_up()
+
 from datetime import date
 from pathlib import Path
 
@@ -22,8 +35,16 @@ class MusicApp(App):
         layout: vertical;
     }
     #search-input {
-        dock: top;
-        margin: 1 2;
+        margin: 1 2 0 2;
+    }
+    #mode-row {
+        height: 3;
+        align: center middle;
+        margin: 0 2;
+    }
+    #mode-row Button {
+        margin: 0 1;
+        min-width: 10;
     }
     .help-line {
         height: 1;
@@ -40,6 +61,9 @@ class MusicApp(App):
         overflow-y: auto;
         display: none;
         padding: 1 2;
+    }
+    #main-content {
+        height: 1fr;
     }
     .prow {
         height: 3;
@@ -87,8 +111,7 @@ class MusicApp(App):
         self.max_workers: int = max_workers
         self.page_num: int = 0
         self.page_size: int = 5
-        self.artist_mode: bool = False
-        self.raw_mode: bool = False
+        self._mode: str = "normal"
         self.busqueda: str = ""
         self.entries: list[dict] = []
         self._all_entries: list[dict] = []
@@ -102,9 +125,13 @@ class MusicApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical(id="main-content"):
-            yield Input(id="search-input", placeholder="Canción: Escribe y presiona Enter...")
+            yield SearchInput(id="search-input", placeholder="Buscar canción, pegar URL de playlist...")
+            with Horizontal(id="mode-row"):
+                yield Button("Normal", id="mode-normal-btn", variant="primary")
+                yield Button("Artista", id="mode-artist-btn")
+                yield Button("Crudo", id="mode-raw-btn")
             yield Static(self.HELP_TEXT, id="help-text", classes="help-line")
-            yield DataTable(id="results-table")
+            yield SearchResults(id="results-table")
             yield Vertical(id="progress-area")
         yield Static(id="status-bar")
         with Horizontal(id="action-bar"):
@@ -116,6 +143,7 @@ class MusicApp(App):
 
     def on_mount(self) -> None:
         self.query_one("#results-table", DataTable).cursor_type = "row"
+        self.set_timer(0, lambda: self.query_one("#search-input", Input).focus())
 
     def on_unmount(self) -> None:
         flush_store()
@@ -125,33 +153,30 @@ class MusicApp(App):
         if not raw:
             return
         self.selected.clear()
-        self.artist_mode = raw.startswith("@")
-        self.raw_mode = raw.startswith("!")
-        self.busqueda = raw[1:] if (self.artist_mode or self.raw_mode) else raw
+        self.busqueda = raw
+        self.page_num = 0
+        self._fetched_total = 0
+        self._fetching_more = False
 
-        playlist_str = raw[1:] if raw.startswith("/") else raw
-        if is_playlist_url(playlist_str):
-            self._playlist_url = playlist_str
+        if is_playlist_url(raw):
+            self._playlist_url = raw
             self._set_status("Cargando playlist...")
             self._set_help("Cargando playlist...")
             self.run_worker(self._search_playlist, thread=True)
         else:
-            self.page_size = 50 if self.artist_mode else 5
-            self.page_num = 0
-            self._fetched_total = 0
-            self._fetching_more = False
+            self.page_size = 50 if self._mode == "artist" else 5
             self._set_status("Buscando...")
             self._set_help("Buscando...")
             self.run_worker(self._search_yt, thread=True)
 
     MAX_RESULTS = 100
-    HELP_TEXT = "Esp=Sel  a=Todo/Nada  →=SigPag  ←=AntPag  Enter=Desc  Ctrl+Q=Salir"
+    HELP_TEXT = "Esp=Sel  a=Todo/Nada  ↑/↓=Navegar  →←=Pág  Tab=Cambiar  Enter=Desc  Ctrl+Q=Salir"
 
     def _search_yt(self) -> None:
         try:
             self._fetched_total = max(self._fetched_total, self.MAX_RESULTS)
             query = f"ytsearch{self._fetched_total}:{self.busqueda}"
-            if not self.raw_mode and not self.artist_mode:
+            if self._mode == "normal":
                 query += " audio"
 
             opts = {
@@ -224,7 +249,8 @@ class MusicApp(App):
             table.move_cursor(row=cursor_row)
 
         self._set_help(self.HELP_TEXT)
-        self._set_status(f"Página {self.page_num + 1} — {len(self.entries)} resultados")
+        mode_label = {"normal": "Normal", "artist": "Artista", "raw": "Crudo"}.get(self._mode, "Normal")
+        self._set_status(f"{mode_label} · Página {self.page_num + 1} — {len(self.entries)} resultados")
         self._update_action_bar()
 
     def _update_action_bar(self) -> None:
@@ -281,6 +307,13 @@ class MusicApp(App):
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         self._toggle_row(event.cursor_row)
 
+    def _set_mode(self, mode: str) -> None:
+        self._mode = mode
+        for mid, bid in [("normal", "mode-normal-btn"), ("artist", "mode-artist-btn"), ("raw", "mode-raw-btn")]:
+            btn = self.query_one(f"#{bid}", Button)
+            btn.variant = "primary" if mid == mode else "default"
+        self.query_one("#search-input", Input).focus()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id in ("quit-btn", "quit-summary-btn"):
             self.exit()
@@ -288,6 +321,12 @@ class MusicApp(App):
             self.action_start_download()
         elif event.button.id == "new-search-btn":
             self.action_new_search()
+        elif event.button.id == "mode-normal-btn":
+            self._set_mode("normal")
+        elif event.button.id == "mode-artist-btn":
+            self._set_mode("artist")
+        elif event.button.id == "mode-raw-btn":
+            self._set_mode("raw")
 
     def _build_jobs(self) -> list[DownloadJob]:
         jobs = []
@@ -296,7 +335,7 @@ class MusicApp(App):
             url = entry.get("webpage_url")
             if url and url in self.selected:
                 salida = self.base_salida
-                if self.artist_mode:
+                if self._mode == "artist":
                     salida = str(Path(self.base_salida).parent / sanitize_filename(search_query))
                     Path(salida).mkdir(parents=True, exist_ok=True)
                 jobs.append(DownloadJob(
@@ -316,6 +355,7 @@ class MusicApp(App):
             return
 
         self.query_one("#search-input").display = False
+        self.query_one("#mode-row").display = False
         self.query_one("#results-table").display = False
         self.query_one("#help-text").display = False
         self.query_one("#action-bar").display = False
@@ -412,6 +452,7 @@ class MusicApp(App):
         self.query_one("#progress-area").remove_children()
         self.query_one("#progress-area").display = False
         self.query_one("#search-input").display = True
+        self.query_one("#mode-row").display = True
         self.query_one("#results-table").display = True
         self.query_one("#help-text").display = True
         self.query_one("#action-bar").display = True
