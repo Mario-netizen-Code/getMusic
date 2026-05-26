@@ -1,4 +1,5 @@
 yt-dlp>=2024.0.0
 tqdm>=4.60.0
+textual>=0.52.0
 prompt_toolkit>=3.0.0
 cryptography>=41.0.0
