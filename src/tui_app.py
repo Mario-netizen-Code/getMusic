@@ -172,19 +172,23 @@ class MusicApp(App):
         n = len(self.selected)
         btn.label = f"Descargar ({n})" if n else "Descargar"
 
-    def action_toggle_selection(self) -> None:
-        table = self.query_one("#results-table", DataTable)
-        cursor_row = table.cursor_row
+    def _toggle_row(self, cursor_row: int | None) -> None:
         if cursor_row is None:
             return
         idx = self.page_num * self.page_size + cursor_row
         if idx < len(self.entries):
-            url = self.entries[idx].get("webpage_url", "")
+            url = self.entries[idx].get("webpage_url")
+            if not url:
+                return
             if url in self.selected:
                 self.selected.discard(url)
             else:
                 self.selected.add(url)
             self._update_table()
+
+    def action_toggle_selection(self) -> None:
+        table = self.query_one("#results-table", DataTable)
+        self._toggle_row(table.cursor_row)
 
     def action_toggle_all(self) -> None:
         start = self.page_num * self.page_size
@@ -209,17 +213,7 @@ class MusicApp(App):
             self._update_table()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        cursor_row = event.cursor_row
-        if cursor_row is None:
-            return
-        idx = self.page_num * self.page_size + cursor_row
-        if idx < len(self.entries):
-            url = self.entries[idx].get("webpage_url", "")
-            if url in self.selected:
-                self.selected.discard(url)
-            else:
-                self.selected.add(url)
-            self._update_table()
+        self._toggle_row(event.cursor_row)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "quit-btn":
