@@ -25,6 +25,12 @@ class MusicApp(App):
         dock: top;
         margin: 1 2;
     }
+    .help-line {
+        height: 1;
+        text-align: center;
+        color: $text-muted;
+        padding: 0 1;
+    }
     #results-table {
         height: 1fr;
         margin: 0 1;
@@ -85,6 +91,9 @@ class MusicApp(App):
         self.raw_mode: bool = False
         self.busqueda: str = ""
         self.entries: list[dict] = []
+        self._all_entries: list[dict] = []
+        self._fetched_total: int = 0
+        self._fetching_more: bool = False
         self.selected: set[str] = set()
         self.descargadas: set[str] = {e["url"] for e in load_downloads() if e.get("url")}
         self._progress_widgets: dict[str, tuple[Static, ProgressBar, Static]] = {}
@@ -94,12 +103,13 @@ class MusicApp(App):
         yield Header(show_clock=True)
         with Vertical(id="main-content"):
             yield Input(id="search-input", placeholder="Canción: Escribe y presiona Enter...")
+            yield Static(self.HELP_TEXT, id="help-text", classes="help-line")
             yield DataTable(id="results-table")
             yield Vertical(id="progress-area")
+        yield Static(id="status-bar")
         with Horizontal(id="action-bar"):
             yield Button("Descargar", id="download-btn", variant="primary")
             yield Button("Salir", id="quit-btn")
-        yield Static(id="status-bar")
 
     def action_quit(self) -> None:
         self.exit()
@@ -118,40 +128,63 @@ class MusicApp(App):
 
         playlist_str = raw[1:] if raw.startswith("/") else raw
         if is_playlist_url(playlist_str):
-            self.run_worker(self._search_playlist(playlist_str), worker_type="thread")
+            self._playlist_url = playlist_str
+            self._set_status("Cargando playlist...")
+            self._set_help("Cargando playlist...")
+            self.run_worker(self._search_playlist, thread=True)
         else:
             self.page_size = 50 if self.artist_mode else 5
             self.page_num = 0
-            self.run_worker(self._search_yt(), worker_type="thread")
+            self._fetched_total = 0
+            self._fetching_more = False
+            self._set_status("Buscando...")
+            self._set_help("Buscando...")
+            self.run_worker(self._search_yt, thread=True)
+
+    MAX_RESULTS = 50
+    HELP_TEXT = "Esp=Sel  a=Todo/Nada  →=SigPag  ←=AntPag  Enter=Desc  Ctrl+Q=Salir"
 
     def _search_yt(self) -> None:
-        self.call_from_thread(self._set_status, "Buscando...")
         try:
-            total = (self.page_num + 1) * self.page_size
-            query = f"ytsearch{total}:{self.busqueda}"
+            self._fetched_total = max(self._fetched_total, self.MAX_RESULTS)
+            query = f"ytsearch{self._fetched_total}:{self.busqueda}"
             if not self.raw_mode and not self.artist_mode:
                 query += " audio"
 
             opts = {
                 "quiet": True, "no_warnings": True, "ignoreerrors": True,
-                "no_color": True, "extract_flat": False,
+                "no_color": True, "extract_flat": True,
             }
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(query, download=False)
 
-            page = [e for e in (info.get("entries") if info else []) if e]
-            for e in page:
+            self._all_entries = [e for e in (info.get("entries") if info else []) if e]
+            for e in self._all_entries:
                 if not e.get("webpage_url"):
                     e["webpage_url"] = e.get("url", f"https://www.youtube.com/watch?v={e.get('id', '')}")
-            self.entries = page
+            self.entries = self._all_entries
+            if self._fetching_more:
+                max_page = (len(self._all_entries) - 1) // self.page_size
+                if self.page_num < max_page:
+                    self.page_num += 1
+                self._fetching_more = False
         except Exception as e:
             self.call_from_thread(self._set_status, f"Error al buscar: {e}")
+            self.call_from_thread(self._set_help, f"Error: {e}")
+            self._all_entries = []
             self.entries = []
 
         self.call_from_thread(self._update_table)
 
     def _set_status(self, text: str) -> None:
         self.query_one("#status-bar", Static).update(text)
+
+    # also show status in the help-text area for more visibility
+    def _set_help(self, text: str) -> None:
+        try:
+            self.query_one("#help-text", Static).update(text)
+        except Exception:
+            pass
 
     def _format_views(self, n: int | None) -> str:
         if n is None:
@@ -164,6 +197,7 @@ class MusicApp(App):
 
     def _update_table(self) -> None:
         table = self.query_one("#results-table", DataTable)
+        cursor_row = table.cursor_row
         table.clear(columns=True)
         table.add_columns("", "#", "Título", "Artista", "Dur", "Vistas")
 
@@ -183,6 +217,10 @@ class MusicApp(App):
             views = self._format_views(e.get("view_count"))
             table.add_row(checked, str(i), tit, chan, f"{m}:{s:02d}", views)
 
+        if cursor_row is not None and cursor_row < table.row_count:
+            table.move_cursor(row=cursor_row)
+
+        self._set_help(self.HELP_TEXT)
         self._set_status(f"Página {self.page_num + 1} — {len(self.entries)} resultados")
         self._update_action_bar()
 
@@ -221,10 +259,16 @@ class MusicApp(App):
         self._update_table()
 
     def action_next_page(self) -> None:
-        max_page = (len(self.entries) - 1) // self.page_size
+        max_page = (len(self._all_entries) - 1) // self.page_size
         if self.page_num < max_page:
             self.page_num += 1
             self._update_table()
+        else:
+            self._fetched_total += self.page_size
+            self._fetching_more = True
+            self._set_status("Cargando más resultados...")
+            self._set_help("Cargando más resultados...")
+            self.run_worker(self._search_yt, thread=True)
 
     def action_prev_page(self) -> None:
         if self.page_num > 0:
@@ -244,17 +288,18 @@ class MusicApp(App):
 
     def _build_jobs(self) -> list[DownloadJob]:
         jobs = []
+        search_query = self.busqueda
         for entry in self.entries:
             url = entry.get("webpage_url")
             if url and url in self.selected:
                 salida = self.base_salida
                 if self.artist_mode:
-                    salida = str(Path(self.base_salida).parent / sanitize_filename(self.busqueda))
+                    salida = str(Path(self.base_salida).parent / sanitize_filename(search_query))
                     Path(salida).mkdir(parents=True, exist_ok=True)
                 jobs.append(DownloadJob(
                     url=url,
                     salida=salida,
-                    query=entry.get("title", "?"),
+                    query=search_query,
                     titulo=entry.get("title", "?"),
                     channel=entry.get("channel") or entry.get("uploader", "?"),
                 ))
@@ -269,6 +314,7 @@ class MusicApp(App):
 
         self.query_one("#search-input").display = False
         self.query_one("#results-table").display = False
+        self.query_one("#help-text").display = False
         self.query_one("#action-bar").display = False
 
         progress_area = self.query_one("#progress-area")
@@ -286,7 +332,7 @@ class MusicApp(App):
             self._progress_widgets[job.url] = (label, bar, status)
 
         self._set_status("Descargando...")
-        self.run_worker(self._run_downloads(), worker_type="thread")
+        self.run_worker(self._run_downloads, thread=True)
 
     def _run_downloads(self) -> None:
         def _cb(url):
@@ -317,13 +363,16 @@ class MusicApp(App):
         widgets = self._progress_widgets.get(url)
         if not widgets:
             return
-        _, bar, _ = widgets
+        _, bar, status = widgets
         if d["status"] == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate")
-            if total:
-                bar.progress = d["downloaded_bytes"] / total * 100
+            downloaded = d.get("downloaded_bytes", 0)
+            if total and downloaded:
+                bar.progress = downloaded / total * 100
         elif d["status"] == "finished":
             bar.progress = 100
+        elif d["status"] == "error":
+            status.update("✗ Error en descarga")
 
     def _mark_done(self, job: DownloadJob, success: bool, error: str = "") -> None:
         widgets = self._progress_widgets.get(job.url)
@@ -360,19 +409,22 @@ class MusicApp(App):
         self.query_one("#progress-area").display = False
         self.query_one("#search-input").display = True
         self.query_one("#results-table").display = True
+        self.query_one("#help-text").display = True
         self.query_one("#action-bar").display = True
         self.selected.clear()
         self.entries = []
+        self._all_entries = []
+        self._fetched_total = 0
+        self._fetching_more = False
         self.page_num = 0
         self._update_table()
         self.query_one("#search-input", Input).focus()
 
-    def _search_playlist(self, url: str) -> None:
-        self.call_from_thread(self._set_status, "Cargando playlist...")
+    def _search_playlist(self) -> None:
         try:
             opts = {"quiet": True, "extract_flat": True, "ignoreerrors": True, "no_color": True}
             with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+                info = ydl.extract_info(self._playlist_url, download=False)
 
             entries = [e for e in (info.get("entries") if info else []) if e]
             for e in entries:
@@ -383,6 +435,7 @@ class MusicApp(App):
             self.entries = entries
         except Exception as e:
             self.call_from_thread(self._set_status, f"Error al cargar playlist: {e}")
+            self.call_from_thread(self._set_help, f"Error: {e}")
             self.entries = []
 
         self.call_from_thread(self._update_table)

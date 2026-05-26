@@ -20,19 +20,30 @@ python -m venv venv
 ### Batch download from URLs file
 
 ```powershell
-.\venv\Scripts\python main.py
-.\venv\Scripts\python main.py -o "C:\salida" -j 5 urls.txt
-.\venv\Scripts\python main.py --skip-downloaded urls.txt
+.\venv\Scripts\python src\main.py
+.\venv\Scripts\python src\main.py -o "C:\salida" -j 5 urls.txt
+.\venv\Scripts\python src\main.py --skip-downloaded urls.txt
 ```
 
 ### Interactive mode — search and download directly
 
 ```powershell
-.\venv\Scripts\python main.py --add
-.\venv\Scripts\python main.py --add -j 5
+.\venv\Scripts\python src\main.py --add
+.\venv\Scripts\python src\main.py --add -j 5
 ```
 
-Type a song name, get autocomplete suggestions in real time, choose from results via checkbox, and it downloads on the spot. Use `←`/`→` arrows in the checkbox to navigate pages. All items are pre-selected by default — uncheck the ones you don't want.
+Full terminal UI (Textual) with DataTable, inline help bar, keyboard-driven navigation, and live progress bars.
+
+| Key        | Action                                           |
+| ---------- | ------------------------------------------------ |
+| `Space`    | Toggle selection on current row                  |
+| `a`        | Select / deselect all                            |
+| `→` / `←`  | Next / previous page (fetches more if needed)   |
+| `Enter`    | Download selected songs                          |
+| `Ctrl+Q`   | Quit                                             |
+| `Tab`      | Focus next widget                                |
+
+Inline help bar below input shows active shortcuts.
 
 Prefixes in interactive mode:
 
@@ -51,7 +62,7 @@ Prefixes in interactive mode:
 | `archivo`           | `urls.txt`  | Text file with one YouTube URL per line                         |
 | `-o, --output`      | `downloads` | Base output directory                                           |
 | `-j, --jobs`        | `3`         | Number of concurrent downloads (used for batch and artist mode) |
-| `--add`             | —           | Interactive mode with autocomplete and checkbox selection       |
+| `--add`             | —           | Interactive mode with Textual TUI (DataTable, progress bars)  |
 | `--skip-downloaded` | —           | Skip URLs already present in download history                   |
 
 ### Input file format
@@ -69,21 +80,38 @@ https://youtu.be/OTHER_ID
 - **320 kbps MP3** — extracts best audio with ffmpeg
 - **Metadata** — title, artist, album, etc. embedded via FFmpegMetadata
 - **Smart filenames** — truncated to 100 chars, invalid characters sanitized
-- **Interactive search** — `--add` mode with real-time YouTube + history autocomplete
-- **Checkbox selection** — pick multiple results per page, pre-selected by default
-- **Pagination** — press `Cancel` in checkbox to load next page (new search each time)
-- **Artist mode** — `@ArtistName` shows up to 50 results, browse pages, download many in parallel. Saves to `downloads/ArtistName/`
-- **Playlist mode** — paste a playlist URL (auto-detected or with `/` prefix), select videos via checkbox (all pre-selected), concurrent download
-- **Search history** — encrypted history (`search_history.dat`) with autocomplete suggestions
-- **Download memory** — encrypted log (`download_history.dat`), shows `✓` next to already-downloaded songs in checkbox, skip with `--skip-downloaded`
-- **Smart spinner** — shows elapsed time and "aún buscando..." warning after 5s
+- **Textual TUI** — `--add` mode with full terminal UI: `Input`, `DataTable`, keyboard navigation, selection toggle, inline help bar
+- **Pagination** — `→`/`←` to browse result pages (5 per page in normal mode, 50 in artist mode); fetches more results automatically when reaching the end
+- **Artist mode** — `@ArtistName` shows up to 50 results per page, concurrent download to `downloads/ArtistName/`
+- **Playlist mode** — paste a playlist URL (auto-detected or with `/` prefix), extract videos, checkbox selection, concurrent download
+- **Fast search** — uses `extract_flat=True` for near-instant results (no view counts in table)
+- **Download memory** — shows `⤵` next to already-downloaded songs in results, skip with `--skip-downloaded`
+- **Live progress bars** — per-download `ProgressBar` widgets with speed, ETA, and status
+- **Post-download summary** — shows completion count and "Nueva búsqueda" button without leaving the TUI
+- **Encrypted store** — single file (`data/store.dat`) for search history and download log
 - **Keyboard interrupt** — Ctrl+C handled gracefully in both batch and interactive modes
 - **Organized output** — saved to `{output}/{YYYY-MM-DD}/`; artist downloads to `{output}/ArtistName/`; `urls.txt` renamed on completion
 - **Summary stats** — `✓ X/Y canciones en Zs` after each batch
 
+## Project structure
+
+```
+src/
+├── main.py           CLI entry point (argparse, batch download)
+├── downloader.py     Download logic (yt-dlp wrapper, concurrent batches)
+├── ui.py             Legacy interactive mode (prompt_toolkit, fallback)
+├── tui_app.py        Textual TUI for `--add` mode (DataTable, progress bars)
+├── storage.py        Encrypted persistence (single store in data/)
+├── models.py         Data types (DownloadJob)
+└── utils.py          Shared helpers (tqdm_write, sanitize_filename, URL detection)
+data/
+└── store.dat         Encrypted search & download history (auto-generated)
+```
+
 ## Dependencies
 
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — download engine
-- [tqdm](https://github.com/tqdm/tqdm) — progress bars
-- [prompt_toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit) — interactive input, autocomplete, checkbox dialogs
+- [tqdm](https://github.com/tqdm/tqdm) — progress bars (batch mode)
+- [textual](https://github.com/Textualize/textual) — terminal UI framework for `--add` mode
+- [prompt_toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit) — interactive input (legacy `ui.py`)
 - [cryptography](https://github.com/pyca/cryptography) — encrypted search/download history
