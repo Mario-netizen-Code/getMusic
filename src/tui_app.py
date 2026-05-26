@@ -49,6 +49,10 @@ class MusicApp(App):
 
     BINDINGS = [
         Binding("ctrl+q", "quit", "Salir", priority=True),
+        Binding("space", "toggle_selection", "Seleccionar", priority=True),
+        Binding("a", "toggle_all", "Todo/Nada", priority=True),
+        Binding("right", "next_page", "→ Pág", priority=True),
+        Binding("left", "prev_page", "← Pág", priority=True),
     ]
 
     def __init__(self, archivo: str = "", salida: str = "", max_workers: int = 3):
@@ -80,6 +84,9 @@ class MusicApp(App):
 
     def action_quit(self) -> None:
         self.exit()
+
+    def on_mount(self) -> None:
+        self.query_one("#results-table", DataTable).cursor_type = "row"
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         raw = event.value.strip()
@@ -158,6 +165,70 @@ class MusicApp(App):
             table.add_row(checked, str(i), tit, chan, f"{m}:{s:02d}", views)
 
         self._set_status(f"Página {self.page_num + 1} — {len(self.entries)} resultados")
+        self._update_action_bar()
+
+    def _update_action_bar(self) -> None:
+        btn = self.query_one("#download-btn", Button)
+        n = len(self.selected)
+        btn.label = f"Descargar ({n})" if n else "Descargar"
+
+    def action_toggle_selection(self) -> None:
+        table = self.query_one("#results-table", DataTable)
+        cursor_row = table.cursor_row
+        if cursor_row is None:
+            return
+        idx = self.page_num * self.page_size + cursor_row
+        if idx < len(self.entries):
+            url = self.entries[idx].get("webpage_url", "")
+            if url in self.selected:
+                self.selected.discard(url)
+            else:
+                self.selected.add(url)
+            self._update_table()
+
+    def action_toggle_all(self) -> None:
+        start = self.page_num * self.page_size
+        end = (self.page_num + 1) * self.page_size
+        visible = self.entries[start:end]
+        visible_urls = {e.get("webpage_url", "") for e in visible if e.get("webpage_url")}
+        if visible_urls.issubset(self.selected):
+            self.selected -= visible_urls
+        else:
+            self.selected |= visible_urls
+        self._update_table()
+
+    def action_next_page(self) -> None:
+        max_page = (len(self.entries) - 1) // self.page_size
+        if self.page_num < max_page:
+            self.page_num += 1
+            self._update_table()
+
+    def action_prev_page(self) -> None:
+        if self.page_num > 0:
+            self.page_num -= 1
+            self._update_table()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        cursor_row = event.cursor_row
+        if cursor_row is None:
+            return
+        idx = self.page_num * self.page_size + cursor_row
+        if idx < len(self.entries):
+            url = self.entries[idx].get("webpage_url", "")
+            if url in self.selected:
+                self.selected.discard(url)
+            else:
+                self.selected.add(url)
+            self._update_table()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "quit-btn":
+            self.exit()
+        elif event.button.id == "download-btn":
+            self.action_start_download()
+
+    def action_start_download(self) -> None:
+        self._set_status("Descargando...")
 
     def _search_playlist(self, url: str) -> None:
         self.call_from_thread(self._set_status, "Cargando playlist...")
