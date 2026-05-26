@@ -7,7 +7,7 @@ from pathlib import Path
 
 from downloader import download_batch
 from models import DownloadJob
-from storage import load_downloads
+from storage import load_downloads, flush_store
 from tui_app import MusicApp
 from utils import tqdm_write
 
@@ -114,6 +114,7 @@ def main() -> None:
 
     try:
         done, total, elapsed = download_batch(jobs, max_workers)
+        flush_store()
     except KeyboardInterrupt:
         print("\n  Interrumpido por el usuario.\n")
         sys.exit(130)

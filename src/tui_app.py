@@ -11,7 +11,7 @@ import concurrent.futures
 import yt_dlp
 
 from models import DownloadJob
-from storage import load_downloads, register_search, register_download
+from storage import load_downloads, register_search, register_download, flush_store
 from utils import is_playlist_url, sanitize_filename
 from downloader import descargar_mp3
 
@@ -117,6 +117,9 @@ class MusicApp(App):
     def on_mount(self) -> None:
         self.query_one("#results-table", DataTable).cursor_type = "row"
 
+    def on_unmount(self) -> None:
+        flush_store()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         raw = event.value.strip()
         if not raw:
@@ -141,7 +144,7 @@ class MusicApp(App):
             self._set_help("Buscando...")
             self.run_worker(self._search_yt, thread=True)
 
-    MAX_RESULTS = 50
+    MAX_RESULTS = 100
     HELP_TEXT = "Esp=Sel  a=Todo/Nada  →=SigPag  ←=AntPag  Enter=Desc  Ctrl+Q=Salir"
 
     def _search_yt(self) -> None:
@@ -264,7 +267,7 @@ class MusicApp(App):
             self.page_num += 1
             self._update_table()
         else:
-            self._fetched_total += self.page_size
+            self._fetched_total += self.MAX_RESULTS
             self._fetching_more = True
             self._set_status("Cargando más resultados...")
             self._set_help("Cargando más resultados...")
@@ -344,7 +347,7 @@ class MusicApp(App):
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as ex:
             fut_to_job = {}
             for job in self._download_jobs:
-                fut = ex.submit(descargar_mp3, job.url, job.salida, _cb(job.url))
+                fut = ex.submit(descargar_mp3, job.url, job.salida, _cb(job.url), job.titulo)
                 fut_to_job[fut] = job
 
             for fut in concurrent.futures.as_completed(fut_to_job):
@@ -395,6 +398,7 @@ class MusicApp(App):
         if err:
             msg += f"  ✗ {err} errores"
         self._set_status(msg)
+        flush_store()
         progress_area = self.query_one("#progress-area")
         progress_area.mount(
             Horizontal(

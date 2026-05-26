@@ -84,11 +84,13 @@ https://youtu.be/OTHER_ID
 - **Pagination** — `→`/`←` to browse result pages (5 per page in normal mode, 50 in artist mode); fetches more results automatically when reaching the end
 - **Artist mode** — `@ArtistName` shows up to 50 results per page, concurrent download to `downloads/ArtistName/`
 - **Playlist mode** — paste a playlist URL (auto-detected or with `/` prefix), extract videos, checkbox selection, concurrent download
-- **Fast search** — uses `extract_flat=True` for near-instant results (no view counts in table)
+- **Fast search** — uses `extract_flat=True` for near-instant results (no view counts in table); fetches 100 results initially, paginates in 100-result increments (fewer re-fetches)
 - **Download memory** — shows `⤵` next to already-downloaded songs in results, skip with `--skip-downloaded`
 - **Live progress bars** — per-download `ProgressBar` widgets with speed, ETA, and status
 - **Post-download summary** — shows completion count and "Nueva búsqueda" button without leaving the TUI
-- **Encrypted store** — single file (`data/store.dat`) for search history and download log
+- **Encrypted store** — single file (`data/store.dat`) for search history + download log. Auto-generated `data/.key` (Fernet), `store.dat.bak` before each overwrite, schema validation with automatic fallback to `.bak` on corruption, max 500 entries per list.
+- **No double extraction** — skips pre-extraction HTTP request when title is already known (TUI mode), reducing per-download overhead
+- **Batch storage writes** — dirty-flag pattern: all writes deferred until flush (once per batch or on exit), not per-call
 - **Keyboard interrupt** — Ctrl+C handled gracefully in both batch and interactive modes
 - **Organized output** — saved to `{output}/{YYYY-MM-DD}/`; artist downloads to `{output}/ArtistName/`; `urls.txt` renamed on completion
 - **Summary stats** — `✓ X/Y canciones en Zs` after each batch
@@ -105,7 +107,9 @@ src/
 ├── models.py         Data types (DownloadJob)
 └── utils.py          Shared helpers (tqdm_write, sanitize_filename, URL detection)
 data/
-└── store.dat         Encrypted search & download history (auto-generated)
+├── .key             Fernet encryption key (auto-generated on first run)
+├── store.dat        Encrypted search & download history
+└── store.dat.bak    Automatic backup before each store overwrite
 ```
 
 ## Dependencies

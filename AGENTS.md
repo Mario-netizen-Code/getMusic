@@ -39,6 +39,14 @@ Console tool to download YouTube audio as MP3 from a text file listing URLs.
 - **Filename**: truncated to 100 chars max stem, invalid chars sanitized.
 - **Module structure** (`src/`): `main.py` (CLI entry), `downloader.py` (yt-dlp wrapper, batches), `ui.py` (interactive mode), `tui_app.py` (Textual TUI for `--add`), `storage.py` (encrypted persistence), `models.py` (data types), `utils.py` (shared helpers).
 - **Encrypted store**: single file `data/store.dat` (auto-generated) for search history + download log. `data/` is in `.gitignore`.
+  - **Key**: `data/.key` generado con `Fernet.generate_key()` en el primer uso (no más derivación de USERNAME).
+  - **Backup**: `store.dat.bak` creado automáticamente antes de cada sobrescritura.
+  - **Validación**: verifica esquema al cargar; si `store.dat` está corrupto, carga desde `.bak`.
+  - **Límite**: máximo 500 entradas por lista (las más viejas se descartan automáticamente).
+- **Performance optimizations**:
+  - `descargar_mp3` avoids double `extract_info` when `titulo` is provided (skips pre-extraction HTTP request).
+  - `download_batch` pre-extracts titles sequentially before parallel download pool starts.
+  - `storage.py` uses dirty-flag writes — `register_search`/`register_download` defer I/O until `flush_store()` is called (once per download batch or on app exit).
+  - `tui_app.py` fetches 100 results initially (`MAX_RESULTS=100`), paginates in 100-result increments (fewer re-fetches).
 - **No tests, linters, or typecheckers** configured. No CI.
-- **Fresh repo** — zero commits.
 - `.opencode/` directory is OpenCode internal tooling; not part of project code.

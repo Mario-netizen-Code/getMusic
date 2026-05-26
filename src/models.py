@@ -1,7 +1,8 @@
-from typing import NamedTuple
+from dataclasses import dataclass
 
 
-class DownloadJob(NamedTuple):
+@dataclass
+class DownloadJob:
     url: str
     salida: str
     query: str

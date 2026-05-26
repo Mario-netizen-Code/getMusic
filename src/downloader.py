@@ -12,13 +12,15 @@ from storage import register_search, register_download
 from utils import sanitize_filename, tqdm_write
 
 
-def descargar_mp3(url: str, salida: str, progress_callback=None) -> str:
+def descargar_mp3(url: str, salida: str, progress_callback=None, titulo: str = "") -> str:
     salida_path = Path(salida)
 
-    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
-        info = ydl.extract_info(url, download=False)
-        raw_title = info.get("title", url)
+    if not titulo:
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+            info = ydl.extract_info(url, download=False)
+            titulo = info.get("title", url)
 
+    raw_title = titulo
     max_stem = 100
     stem = sanitize_filename(raw_title)
     if len(stem) > max_stem:
@@ -57,6 +59,18 @@ def download_batch(jobs: list[DownloadJob], max_workers: int = 3, descargadas: s
     total = len(jobs)
     done = 0
     start_time = time.time()
+
+    need_titles = [j for j in jobs if not j.titulo]
+    if need_titles:
+        tqdm_write("Obteniendo metadatos...")
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "ignoreerrors": True}) as ydl:
+            for j in need_titles:
+                try:
+                    info = ydl.extract_info(j.url, download=False)
+                    j.titulo = info.get("title", j.url)
+                except Exception:
+                    j.titulo = j.url
+
     ncols = os.get_terminal_size().columns if hasattr(os, 'get_terminal_size') else 80
     tqdm_write("")
     with tqdm(total=total, desc="Progreso", unit="archivo", ncols=ncols, file=sys.stdout) as pbar:
@@ -73,7 +87,7 @@ def download_batch(jobs: list[DownloadJob], max_workers: int = 3, descargadas: s
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futuros = {}
             for job in jobs:
-                futuros[executor.submit(descargar_mp3, job.url, job.salida, _hook(job))] = job
+                futuros[executor.submit(descargar_mp3, job.url, job.salida, _hook(job), job.titulo)] = job
             pending = set(futuros.keys())
             try:
                 while pending:

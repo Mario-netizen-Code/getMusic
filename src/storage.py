@@ -1,7 +1,5 @@
-import base64
-import hashlib
 import json
-import os
+import shutil
 from datetime import date, datetime
 from pathlib import Path
 
@@ -9,47 +7,99 @@ from cryptography.fernet import Fernet, InvalidToken
 
 
 STORE_PATH = Path(__file__).parent.parent / "data" / "store.dat"
+KEY_PATH = Path(__file__).parent.parent / "data" / ".key"
+BACKUP_PATH = STORE_PATH.with_suffix(".dat.bak")
+MAX_HISTORY = 500
+SCHEMA = {"search_history", "download_history"}
 
 
-def _clave_fernet() -> bytes:
-    material = f"{os.environ.get('USERNAME','')}-{os.environ.get('COMPUTERNAME','')}"
-    return base64.urlsafe_b64encode(hashlib.sha256(material.encode()).digest())
+def _load_key() -> bytes:
+    if KEY_PATH.is_file():
+        return KEY_PATH.read_bytes()
+    KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    key = Fernet.generate_key()
+    KEY_PATH.write_bytes(key)
+    return key
+
+
+def _validate_schema(data: dict) -> bool:
+    if not isinstance(data, dict):
+        return False
+    return SCHEMA.issubset(data.keys())
+
+
+def _trim_history(data: dict) -> dict:
+    for key in ("search_history", "download_history"):
+        lst = data.get(key, [])
+        if len(lst) > MAX_HISTORY:
+            data[key] = lst[-MAX_HISTORY:]
+    return data
 
 
 class _Store:
     def __init__(self, path: Path):
         self._path = path
         self._cache: dict | None = None
+        self._dirty: bool = False
+        self._fernet = Fernet(_load_key())
+
+    def _try_load(self, path: Path) -> dict | None:
+        if not path.is_file():
+            return None
+        raw = path.read_bytes()
+        if not raw:
+            return None
+        try:
+            descifrado = self._fernet.decrypt(raw)
+            data = json.loads(descifrado.decode("utf-8"))
+            if _validate_schema(data):
+                return data
+        except (InvalidToken, Exception):
+            pass
+        return None
 
     def _load_raw(self) -> dict:
         if self._cache is not None:
             return self._cache
-        if not self._path.is_file():
-            self._cache = {"search_history": [], "download_history": []}
+
+        data = self._try_load(self._path)
+        if data is not None:
+            self._cache = data
+            self._dirty = False
             return self._cache
-        try:
-            raw = self._path.read_bytes()
-            if not raw:
-                self._cache = {"search_history": [], "download_history": []}
-                return self._cache
-            clave = _clave_fernet()
-            descifrado = Fernet(clave).decrypt(raw)
-            data = json.loads(descifrado.decode("utf-8"))
-            self._cache = data if isinstance(data, dict) else {"search_history": [], "download_history": []}
+
+        data = self._try_load(BACKUP_PATH)
+        if data is not None:
+            self._cache = data
+            self._dirty = False
             return self._cache
-        except (InvalidToken, Exception):
-            self._cache = {"search_history": [], "download_history": []}
-            return self._cache
+
+        self._cache = {"search_history": [], "download_history": []}
+        self._dirty = False
+        return self._cache
 
     def _save_raw(self, data: dict) -> None:
         self._cache = data
+        self._dirty = True
+
+    def flush(self) -> None:
+        if not self._dirty or self._cache is None:
+            return
+        data = _trim_history(self._cache)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        clave = _clave_fernet()
-        cifrado = Fernet(clave).encrypt(json.dumps(data).encode("utf-8"))
+        if self._path.is_file():
+            shutil.copy2(self._path, BACKUP_PATH)
+        cifrado = self._fernet.encrypt(json.dumps(data).encode("utf-8"))
         self._path.write_bytes(cifrado)
+        self._cache = data
+        self._dirty = False
 
 
 _store = _Store(STORE_PATH)
+
+
+def flush_store() -> None:
+    _store.flush()
 
 
 def _cargar_historial() -> list[dict]:
