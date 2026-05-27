@@ -1,8 +1,13 @@
 import argparse
+import os
 from datetime import date
 from pathlib import Path
 
 from tui_app import MusicApp
+
+
+def _default_jobs() -> int:
+    return (os.cpu_count() or 1) + 2
 
 
 def main() -> None:
@@ -16,8 +21,8 @@ def main() -> None:
     )
     parser.add_argument(
         "-j", "--jobs",
-        type=int, default=3,
-        help="Descargas concurrentes (default: 3)",
+        type=int, default=_default_jobs(),
+        help=f"Descargas concurrentes (default: CPUs+2 = {_default_jobs()})",
     )
     args = parser.parse_args()
 
