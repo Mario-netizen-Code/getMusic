@@ -1,11 +1,19 @@
+import re
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Header, Input, DataTable, Button, Static, ProgressBar
+from textual.screen import Screen
+from textual.widgets import Header, Input, DataTable, Button, Static, ProgressBar, ListView, ListItem, Label
 from textual.containers import Horizontal, Vertical
 
 
 class SearchInput(Input):
     def key_down(self) -> None:
+        self.app.query_one("#results-table", DataTable).focus()
+
+
+class NavButton(Button):
+    def key_up(self) -> None:
         self.app.query_one("#results-table", DataTable).focus()
 
 
@@ -16,7 +24,174 @@ class SearchResults(DataTable):
         else:
             super().action_cursor_up()
 
-from datetime import date
+    def action_cursor_down(self) -> None:
+        if self.cursor_row == self.row_count - 1:
+            self.app.query_one("#download-btn", Button).focus()
+        else:
+            super().action_cursor_down()
+
+class ImportFileScreen(Screen[list[dict]]):
+    CSS = """
+    .import-actions {
+        height: 3;
+        align: center middle;
+        margin: 1 2;
+    }
+    #file-list {
+        margin: 0 2;
+        height: 1fr;
+    }
+    #import-status {
+        margin: 1 2 0 2;
+        height: 1;
+        text-align: center;
+    }
+    #import-progress {
+        margin: 0 2 1 2;
+        height: 1;
+        background: $surface;
+        color: $text;
+    }
+    """
+    BINDINGS = [
+        Binding("escape", "dismiss", "Cancelar", priority=True),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header("Importar archivo de URLs")
+        with Horizontal(classes="import-actions"):
+            yield Button("Refrescar", id="refresh-btn", variant="primary")
+        yield Static("Seleccioná un archivo .txt de la carpeta urls/:", classes="help-line")
+        yield ListView(id="file-list")
+        yield Static(id="import-status")
+        yield Static("", id="import-progress")
+
+    def on_mount(self) -> None:
+        self._import_active = False
+        self._found = 0
+        self._setup_file_list()
+
+    def _setup_file_list(self) -> None:
+        folder = Path("urls")
+        folder.mkdir(exist_ok=True)
+        self._files = sorted(folder.glob("*.txt"))
+        lv = self.query_one("#file-list", ListView)
+        lv.clear()
+        if not self._files:
+            lv.append(ListItem(Label("La carpeta urls/ está vacía. Poné tus archivos .txt ahí.")))
+        else:
+            for f in self._files:
+                st = f.stat()
+                size = st.st_size
+                modified = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
+                lv.append(ListItem(Label(f"{f.name}  ({size:,} bytes, {modified})")))
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "refresh-btn":
+            self._setup_file_list()
+
+    def _set_status(self, msg: str) -> None:
+        try:
+            self.query_one("#import-status", Static).update(msg)
+        except Exception:
+            pass
+
+    def _init_pb(self) -> None:
+        self._found = 0
+        self.query_one("#import-progress", Static).update("")
+
+    def _advance_pb(self, count: int) -> None:
+        self._found += count
+        self.query_one("#import-progress", Static).update(f"Encontrados {self._found} videos...")
+        self.query_one("#import-status", Static).update(f"Extrayendo... ({self._found} videos encontrados)")
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        idx = event.list_view.index
+        if idx is not None and idx < len(self._files):
+            path = str(self._files[idx])
+            self._set_status("Leyendo archivo...")
+            self.query_one("#file-list", ListView).display = False
+            self.run_worker(lambda: self._do_import(path), thread=True)
+
+    def _do_import(self, path: str) -> None:
+        try:
+            urls = self._read_urls_file(path)
+        except Exception as e:
+            self.app.call_from_thread(self._set_status, f"Error al leer archivo: {e}")
+            return
+
+        if not urls:
+            self.app.call_from_thread(self._set_status, "No se encontraron URLs válidas de YouTube")
+            return
+
+        total = len(urls)
+        self.app.call_from_thread(self._set_status, f"Extrayendo {total} URLs...")
+
+        all_entries: list[list[dict]] = [None] * total
+
+        def _extract_one(i_url):
+            i, url = i_url
+            try:
+                flat = is_playlist_url(url)
+                opts = {"quiet": True, "no_warnings": True, "ignoreerrors": True}
+                if flat:
+                    opts["extract_flat"] = True
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    playlist_items = info.get("entries")
+                    if playlist_items:
+                        return [{
+                            "title": it.get("title", url),
+                            "webpage_url": it.get("webpage_url") or it.get("url", url),
+                            "channel": it.get("channel") or it.get("uploader", ""),
+                            "uploader": it.get("uploader", ""),
+                            "duration": it.get("duration", 0) or 0,
+                            "view_count": it.get("view_count"),
+                            "url": it.get("url") or it.get("webpage_url", url),
+                        } for it in playlist_items if it]
+                    return [{
+                        "title": info.get("title", url),
+                        "webpage_url": url,
+                        "channel": info.get("channel") or info.get("uploader", ""),
+                        "uploader": info.get("uploader", ""),
+                        "duration": info.get("duration", 0) or 0,
+                        "view_count": info.get("view_count"),
+                        "url": url,
+                    }]
+            except Exception:
+                return [{
+                    "title": url,
+                    "webpage_url": url,
+                    "channel": "",
+                    "uploader": "",
+                    "duration": 0,
+                    "view_count": 0,
+                    "url": url,
+                }]
+
+        self.app.call_from_thread(self._init_pb)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+            fut_map = {ex.submit(_extract_one, (i, u)): i for i, u in enumerate(urls)}
+            for fut in concurrent.futures.as_completed(fut_map):
+                idx = fut_map[fut]
+                items = fut.result()
+                all_entries[idx] = items
+                self.app.call_from_thread(self._advance_pb, len(items))
+
+        flat = [e for batch in all_entries if batch for e in batch]
+        self.app.call_from_thread(self.dismiss, flat)
+
+    def _read_urls_file(self, path: str) -> list[str]:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+        pattern = re.compile(r"^(https?://)?(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com)/")
+        return [u for u in lines if pattern.match(u)]
+
+    def action_dismiss(self) -> None:
+        self.dismiss([])
+
+
+from datetime import date, datetime
 from pathlib import Path
 
 import concurrent.futures
@@ -65,18 +240,25 @@ class MusicApp(App):
     #main-content {
         height: 1fr;
     }
-    .prow {
-        height: 3;
-        margin-bottom: 1;
+    #overall-bar {
+        margin: 1 2 0 2;
     }
-    .prow > Static:first-child {
-        width: 42;
+    #counter-label {
+        height: 1;
+        text-align: center;
+        color: $text-muted;
+        margin: 0 2 0 2;
     }
-    .prow > ProgressBar {
-        width: 1fr;
+    #current-file {
+        height: 1;
+        margin: 0 2 1 2;
+        text-align: center;
+        color: $text;
     }
-    .prow > Static:last-child {
-        width: 30;
+    #done-list {
+        height: 1fr;
+        overflow-y: auto;
+        margin: 0 2;
     }
     #action-bar {
         dock: bottom;
@@ -102,15 +284,14 @@ class MusicApp(App):
         Binding("left", "prev_page", "← Pág", priority=True),
     ]
 
-    def __init__(self, archivo: str = "", salida: str = "", max_workers: int = 3):
+    def __init__(self, salida: str = "", max_workers: int = 3):
         super().__init__()
         if not salida:
             salida = str(Path("downloads") / date.today().isoformat())
-        self.archivo: str = archivo
         self.base_salida: str = salida
         self.max_workers: int = max_workers
         self.page_num: int = 0
-        self.page_size: int = 5
+        self.page_size: int = 30
         self._mode: str = "normal"
         self.busqueda: str = ""
         self.entries: list[dict] = []
@@ -119,8 +300,11 @@ class MusicApp(App):
         self._fetching_more: bool = False
         self.selected: set[str] = set()
         self.descargadas: set[str] = {e["url"] for e in load_downloads() if e.get("url")}
-        self._progress_widgets: dict[str, tuple[Static, ProgressBar, Static]] = {}
         self._download_jobs: list[DownloadJob] = []
+        self._job_by_url: dict[str, DownloadJob] = {}
+        self._importing: bool = False
+        self._downloading: bool = False
+        self._playlist_url: str = ""
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -128,15 +312,16 @@ class MusicApp(App):
             yield SearchInput(id="search-input", placeholder="Buscar canción, pegar URL de playlist...")
             with Horizontal(id="mode-row"):
                 yield Button("Normal", id="mode-normal-btn", variant="primary")
-                yield Button("Artista", id="mode-artist-btn")
-                yield Button("Crudo", id="mode-raw-btn")
+                yield Button("Artista", id="mode-topic-btn")
+                yield Button("Sin filtro", id="mode-raw-btn")
             yield Static(self.HELP_TEXT, id="help-text", classes="help-line")
             yield SearchResults(id="results-table")
             yield Vertical(id="progress-area")
         yield Static(id="status-bar")
         with Horizontal(id="action-bar"):
-            yield Button("Descargar", id="download-btn", variant="primary")
-            yield Button("Salir", id="quit-btn")
+            yield NavButton("Descargar", id="download-btn", variant="primary")
+            yield NavButton("Importar", id="import-btn")
+            yield NavButton("Salir", id="quit-btn")
 
     def action_quit(self) -> None:
         self.exit()
@@ -152,6 +337,9 @@ class MusicApp(App):
         raw = event.value.strip()
         if not raw:
             return
+        if self._importing:
+            self._set_status("Importación en curso... espera")
+            return
         self.selected.clear()
         self.busqueda = raw
         self.page_num = 0
@@ -164,7 +352,8 @@ class MusicApp(App):
             self._set_help("Cargando playlist...")
             self.run_worker(self._search_playlist, thread=True)
         else:
-            self.page_size = 50 if self._mode == "artist" else 5
+            self.page_size = 30
+            self._set_status(f"Modo {self._mode_label()} · buscando...")
             self._set_status("Buscando...")
             self._set_help("Buscando...")
             self.run_worker(self._search_yt, thread=True)
@@ -178,6 +367,8 @@ class MusicApp(App):
             query = f"ytsearch{self._fetched_total}:{self.busqueda}"
             if self._mode == "normal":
                 query += " audio"
+            elif self._mode == "topic":
+                query += " topic"
 
             opts = {
                 "quiet": True, "no_warnings": True, "ignoreerrors": True,
@@ -190,6 +381,7 @@ class MusicApp(App):
             for e in self._all_entries:
                 if not e.get("webpage_url"):
                     e["webpage_url"] = e.get("url", f"https://www.youtube.com/watch?v={e.get('id', '')}")
+            self._rerank_entries(self._all_entries)
             self.entries = self._all_entries
             if self._fetching_more:
                 max_page = (len(self._all_entries) - 1) // self.page_size
@@ -214,43 +406,72 @@ class MusicApp(App):
         except Exception:
             pass
 
-    def _format_views(self, n: int | None) -> str:
-        if n is None:
-            return ""
-        if n >= 1_000_000:
-            return f"{n / 1_000_000:.1f}M"
-        if n >= 1_000:
-            return f"{n / 1_000:.0f}K"
-        return str(n)
+    @staticmethod
+    def _normalize_title(title: str) -> str:
+        t = title.lower()
+        t = re.sub(
+            r'\([^)]*(?:official|music\s*video|video|lyrics?|audio|hq|hd|4k|'
+            r'remastered|live|cover|karaoke|tribute|instrumental|reaction|'
+            r'mashup|feat\.?|ft\.?|explicit|edit|version)[^)]*\)',
+            '', t, flags=re.I
+        )
+        t = re.sub(r'\[[^\]]*\]', '', t)
+        t = re.sub(r'\s*\|\s*.*$', '', t)
+        t = re.sub(r'\s*[-–—]\s*topic\s*$', '', t, flags=re.I)
+        t = re.sub(r'\s+', ' ', t).strip()
+        return t
 
-    def _update_table(self) -> None:
+    @staticmethod
+    def _is_low_quality(e: dict) -> bool:
+        title = e.get("title", "") or ""
+        return bool(re.search(
+            r'[(\[][^)\]]*(?:cover|remix|karaoke|tribute|reaction|mashup|instrumental)',
+            title, re.I
+        ))
+
+    @staticmethod
+    def _rerank_entries(entries: list[dict]) -> None:
+        groups: dict[tuple, dict] = {}
+        for e in entries:
+            norm = MusicApp._normalize_title(e.get("title", "") or "")
+            dur = e.get("duration", 0) or 0
+            bucket = dur // 4
+            key = (norm, bucket)
+            existing = groups.get(key)
+            if existing is None or (e.get("view_count", 0) or 0) > (existing.get("view_count", 0) or 0):
+                groups[key] = e
+        entries.clear()
+        entries.extend(groups.values())
+        entries.sort(key=lambda e: (
+            1 if MusicApp._is_low_quality(e) else 0,
+            -((e.get("view_count", 0) or 0))
+        ))
+
+    def _update_table(self, *, preserve_cursor: bool = False) -> None:
         table = self.query_one("#results-table", DataTable)
-        cursor_row = table.cursor_row
+        cursor_row = table.cursor_row if preserve_cursor else None
         table.clear(columns=True)
-        table.add_columns("", "#", "Título", "Artista", "Dur", "Vistas")
+        table.add_columns("", "#", "Título", "Artista", "Dur", "Estado")
+        cols = table.ordered_columns
+        if len(cols) >= 6:
+            cols[5].width = 3
 
         inicio = self.page_num * self.page_size + 1
         for i, e in enumerate(self.entries[self.page_num * self.page_size:(self.page_num + 1) * self.page_size], inicio):
             url = e.get("webpage_url", "")
-            if url in self.selected:
-                checked = "✓"
-            elif url in self.descargadas:
-                checked = "⤵"
-            else:
-                checked = " "
+            checked = "✓" if url in self.selected else " "
+            estado = "⤵" if url in self.descargadas else ""
             dur = int(e.get("duration", 0) or 0)
             m, s = divmod(dur, 60)
             tit = e.get("title", "?")[:60]
             chan = (e.get("channel") or e.get("uploader", "?"))[:25]
-            views = self._format_views(e.get("view_count"))
-            table.add_row(checked, str(i), tit, chan, f"{m}:{s:02d}", views)
+            table.add_row(checked, str(i), tit, chan, f"{m}:{s:02d}", estado)
 
         if cursor_row is not None and cursor_row < table.row_count:
             table.move_cursor(row=cursor_row)
 
         self._set_help(self.HELP_TEXT)
-        mode_label = {"normal": "Normal", "artist": "Artista", "raw": "Crudo"}.get(self._mode, "Normal")
-        self._set_status(f"{mode_label} · Página {self.page_num + 1} — {len(self.entries)} resultados")
+        self._set_status(f"{self._mode_label()} · Página {self.page_num + 1} — {len(self.entries)} resultados")
         self._update_action_bar()
 
     def _update_action_bar(self) -> None:
@@ -270,7 +491,7 @@ class MusicApp(App):
                 self.selected.discard(url)
             else:
                 self.selected.add(url)
-            self._update_table()
+            self._update_table(preserve_cursor=True)
 
     def action_toggle_selection(self) -> None:
         table = self.query_one("#results-table", DataTable)
@@ -285,7 +506,7 @@ class MusicApp(App):
             self.selected -= visible_urls
         else:
             self.selected |= visible_urls
-        self._update_table()
+        self._update_table(preserve_cursor=True)
 
     def action_next_page(self) -> None:
         max_page = (len(self._all_entries) - 1) // self.page_size
@@ -307,9 +528,12 @@ class MusicApp(App):
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         self._toggle_row(event.cursor_row)
 
+    def _mode_label(self) -> str:
+        return {"normal": "Normal", "topic": "Artista", "raw": "Sin filtro"}.get(self._mode, "Normal")
+
     def _set_mode(self, mode: str) -> None:
         self._mode = mode
-        for mid, bid in [("normal", "mode-normal-btn"), ("artist", "mode-artist-btn"), ("raw", "mode-raw-btn")]:
+        for mid, bid in [("normal", "mode-normal-btn"), ("topic", "mode-topic-btn"), ("raw", "mode-raw-btn")]:
             btn = self.query_one(f"#{bid}", Button)
             btn.variant = "primary" if mid == mode else "default"
         self.query_one("#search-input", Input).focus()
@@ -319,25 +543,55 @@ class MusicApp(App):
             self.exit()
         elif event.button.id == "download-btn":
             self.action_start_download()
+        elif event.button.id == "import-btn":
+            self.action_import()
         elif event.button.id == "new-search-btn":
             self.action_new_search()
         elif event.button.id == "mode-normal-btn":
             self._set_mode("normal")
-        elif event.button.id == "mode-artist-btn":
-            self._set_mode("artist")
+        elif event.button.id == "mode-topic-btn":
+            self._set_mode("topic")
         elif event.button.id == "mode-raw-btn":
             self._set_mode("raw")
+
+    def action_import(self) -> None:
+        if self._importing:
+            return
+        self.push_screen(ImportFileScreen(), self._on_import_file)
+
+    def _on_import_file(self, entries: list[dict]) -> None:
+        if not entries:
+            return
+        self._set_imported_entries(entries)
+
+    def _set_imported_entries(self, entries: list[dict]) -> None:
+        self._importing = False
+        self._fetched_total = 0
+        self._fetching_more = False
+        self.busqueda = ""
+        self._all_entries = entries
+        self.entries = entries
+        self.selected.clear()
+        self.selected.update(
+            e.get("webpage_url", "") for e in entries
+            if e.get("webpage_url") and e.get("webpage_url") not in self.descargadas
+        )
+        self.page_num = 0
+        self.page_size = 30
+        self._update_table()
+        self._set_status(f"Importadas: {len(entries)} canciones  |  "
+                         f"Modo {self._mode_label()} · Página 1 — {len(entries)} resultados")
+        self._set_help(self.HELP_TEXT)
 
     def _build_jobs(self) -> list[DownloadJob]:
         jobs = []
         search_query = self.busqueda
+        seen: set[str] = set()
         for entry in self.entries:
             url = entry.get("webpage_url")
-            if url and url in self.selected:
+            if url and url in self.selected and url not in seen:
+                seen.add(url)
                 salida = self.base_salida
-                if self._mode == "artist":
-                    salida = str(Path(self.base_salida).parent / sanitize_filename(search_query))
-                    Path(salida).mkdir(parents=True, exist_ok=True)
                 jobs.append(DownloadJob(
                     url=url,
                     salida=salida,
@@ -348,7 +602,7 @@ class MusicApp(App):
         return jobs
 
     def action_start_download(self) -> None:
-        if not self.selected:
+        if not self.selected or self._downloading:
             return
         jobs = self._build_jobs()
         if not jobs:
@@ -364,17 +618,19 @@ class MusicApp(App):
         progress_area.display = True
         progress_area.remove_children()
 
-        self._progress_widgets = {}
         self._download_jobs = jobs
-        for i, job in enumerate(jobs):
-            label = Static(job.titulo[:60])
-            bar = ProgressBar(total=100)
-            status = Static("")
-            row = Horizontal(label, bar, status, classes="prow", id=f"prow-{i}")
-            progress_area.mount(row)
-            self._progress_widgets[job.url] = (label, bar, status)
+        self._job_by_url = {job.url: job for job in jobs}
+        self._done_count = 0
+        self._total_count = len(jobs)
 
-        self._set_status("Descargando...")
+        self._overall_bar = ProgressBar(total=self._total_count, id="overall-bar")
+        progress_area.mount(self._overall_bar)
+        progress_area.mount(Static(f"0 / {self._total_count} completados", id="counter-label"))
+        progress_area.mount(Static(id="current-file"))
+        progress_area.mount(Vertical(id="done-list"))
+
+        self._set_status(f"Descargando 0/{self._total_count}...")
+        self._downloading = True
         self.run_worker(self._run_downloads, thread=True)
 
     def _run_downloads(self) -> None:
@@ -403,36 +659,39 @@ class MusicApp(App):
         self.call_from_thread(self._finish_downloads, done, err)
 
     def _update_progress(self, url: str, d: dict) -> None:
-        widgets = self._progress_widgets.get(url)
-        if not widgets:
+        job = self._job_by_url.get(url)
+        if not job:
             return
-        _, bar, status = widgets
         if d["status"] == "downloading":
-            total = d.get("total_bytes") or d.get("total_bytes_estimate")
-            downloaded = d.get("downloaded_bytes", 0)
-            if total and downloaded:
-                bar.progress = downloaded / total * 100
-        elif d["status"] == "finished":
-            bar.progress = 100
-        elif d["status"] == "error":
-            status.update("✗ Error en descarga")
+            try:
+                self.query_one("#current-file", Static).update(f"Descargando: {job.titulo[:60]}")
+            except Exception:
+                pass
 
     def _mark_done(self, job: DownloadJob, success: bool, error: str = "") -> None:
-        widgets = self._progress_widgets.get(job.url)
-        if not widgets:
-            return
-        _, bar, status = widgets
+        self._done_count += 1
+        try:
+            self._overall_bar.progress = self._done_count
+            self.query_one("#counter-label", Static).update(
+                f"{self._done_count} / {self._total_count} completados"
+            )
+            dl = self.query_one("#done-list", Vertical)
+            label = f"✓ {job.titulo[:60]}" if success else f"✗ {job.titulo[:60]}: {error}"
+            dl.mount(Static(label))
+            if self._done_count < self._total_count:
+                self.query_one("#current-file", Static).update("")
+        except Exception:
+            pass
         if success:
-            bar.progress = 100
-            status.update("✓ Listo")
             if job.query:
                 register_search(job.query)
             register_download(job.url, job.titulo, job.channel, job.query)
             self.descargadas.add(job.url)
-        else:
-            status.update(f"✗ {error}")
 
     def _finish_downloads(self, done: int, err: int) -> None:
+        if not self._downloading:
+            return
+        self._downloading = False
         total = done + err
         msg = f"✓ {done}/{total} completadas"
         if err:
@@ -440,6 +699,8 @@ class MusicApp(App):
         self._set_status(msg)
         flush_store()
         progress_area = self.query_one("#progress-area")
+        if progress_area.query("Horizontal#summary-bar"):
+            return
         progress_area.mount(
             Horizontal(
                 Button("Nueva búsqueda", id="new-search-btn", variant="primary"),

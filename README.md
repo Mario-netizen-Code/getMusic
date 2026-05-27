@@ -17,29 +17,20 @@ python -m venv venv
 
 ## Usage
 
-### Batch download from URLs file
-
 ```powershell
 .\venv\Scripts\python src\main.py
-.\venv\Scripts\python src\main.py -o "C:\salida" -j 5 urls.txt
-.\venv\Scripts\python src\main.py --skip-downloaded urls.txt
+.\venv\Scripts\python src\main.py -o "C:\salida"
+.\venv\Scripts\python src\main.py -j 5
 ```
 
-### Interactive mode — search and download directly
-
-```powershell
-.\venv\Scripts\python src\main.py --add
-.\venv\Scripts\python src\main.py --add -j 5
-```
-
-Full terminal UI (Textual) with DataTable, mode selector buttons (Normal / Artista / Crudo), inline help bar, keyboard-driven navigation, and live progress bars.
+Full terminal UI (Textual) with DataTable, mode selector buttons (Normal / Artista / Sin filtro), inline help bar, full keyboard navigation (↑/↓ entre secciones), and live progress bar.
 
 | Key        | Action                                           |
 | ---------- | ------------------------------------------------ |
 | `Space`    | Toggle selection on current row                  |
 | `a`        | Select / deselect all                            |
-| `↓`        | Move focus from search input to results table   |
-| `↑`        | Move focus back to search input (at first row)  |
+| `↓`        | Move focus from search input → results → action bar |
+| `↑`        | Move focus back (action bar → results → search)     |
 | `→` / `←`  | Next / previous page (fetches more if needed)   |
 | `Enter`    | Download selected songs                          |
 | `Ctrl+Q`   | Quit                                             |
@@ -49,11 +40,11 @@ Inline help bar below input shows active shortcuts.
 
 Mode selector before searching:
 
-| Mode | Button    | Behavior                                                                                                     |
-| ---- | --------- | ------------------------------------------------------------------------------------------------------------ |
-| Normal | `Normal` | (default) Adds " audio" suffix to search, 5 results per page                                                 |
-| Artist | `Artista` | No suffix, up to 50 results per page, downloads to `downloads/ArtistName/` subfolder                         |
-| Raw  | `Crudo`   | Raw search (no suffix), 5 results per page                                                                   |
+| Mode | Button       | Behavior                                                                                                     |
+| ---- | ------------ | ------------------------------------------------------------------------------------------------------------ |
+| Normal | `Normal`    | (default) Adds " audio" suffix to search                                                                     |
+| Artist | `Artista`   | Adds " topic" suffix to prefer official auto-generated Topic channels                                        |
+| Raw  | `Sin filtro` | Raw search, no suffix                                                                                        |
 
 Playlists are auto-detected — paste any playlist URL directly in the input.
 
@@ -61,13 +52,12 @@ Playlists are auto-detected — paste any playlist URL directly in the input.
 
 | Arg                 | Default     | Description                                                     |
 | ------------------- | ----------- | --------------------------------------------------------------- |
-| `archivo`           | `urls.txt`  | Text file with one YouTube URL per line                         |
 | `-o, --output`      | `downloads` | Base output directory                                           |
-| `-j, --jobs`        | `3`         | Number of concurrent downloads (used for batch and artist mode) |
-| `--add`             | —           | Interactive mode with Textual TUI (DataTable, progress bars)  |
-| `--skip-downloaded` | —           | Skip URLs already present in download history                   |
+| `-j, --jobs`        | `3`         | Number of concurrent downloads                                  |
 
-### Input file format
+### Import URLs from file (inside the TUI)
+
+Click the **Importar** button to pick from `.txt` files in the current directory (one URL per line):
 
 ```
 https://www.youtube.com/watch?v=VIDEO_ID
@@ -75,36 +65,40 @@ https://www.youtube.com/watch?v=VIDEO_ID
 https://youtu.be/OTHER_ID
 ```
 
+The app will validate URLs, extract titles, and display them in the table for selection and download.
+
 ## Features
 
 - **Concurrent downloads** — parallel downloads with `-j` (default 3)
-- **Progress bars** — one bar per download with speed and ETA, stays visible after completion
+- **Progress** — single overall ProgressBar with current filename + compact done-list
 - **320 kbps MP3** — extracts best audio with ffmpeg
 - **Metadata** — title, artist, album, etc. embedded via FFmpegMetadata
 - **Smart filenames** — truncated to 100 chars, invalid characters sanitized
-- **Textual TUI** — `--add` mode with full terminal UI: `Input`, `DataTable`, keyboard navigation, selection toggle, inline help bar
-- **Pagination** — `→`/`←` to browse result pages (5 per page in normal mode, 50 in artist mode); fetches more results automatically when reaching the end
-- **Artist mode** — `@ArtistName` shows up to 50 results per page, concurrent download to `downloads/ArtistName/`
+- **Textual TUI** — full terminal UI: `Input`, `DataTable`, keyboard navigation, selection toggle, inline help bar
+- **Pagination** — `→`/`←` to browse result pages (30 per page); fetches more results automatically when reaching the end
+- **Artist mode** — `Artista` button adds " topic" suffix to prefer official YouTube Topic channels
 - **Playlist mode** — paste a playlist URL (auto-detected or with `/` prefix), extract videos, checkbox selection, concurrent download
-- **Fast search** — uses `extract_flat=True` for near-instant results (no view counts in table); fetches 100 results initially, paginates in 100-result increments (fewer re-fetches)
-- **Download memory** — shows `⤵` next to already-downloaded songs in results, skip with `--skip-downloaded`
-- **Live progress bars** — per-download `ProgressBar` widgets with speed, ETA, and status
+- **Fast search** — uses `extract_flat=True` for near-instant results; fetches 100 results initially, paginates in 100-result increments (fewer re-fetches)
+- **Smart dedup** — normaliza títulos (saca "(Official Video)", "(Lyrics)", etc.), agrupa por título + duración (±4s), conserva el de más visitas y baja covers/remixes al final
+- **Import URLs from file** — import `.txt` file with YouTube URLs via the **Importar** button; validates URLs, extracts titles, and shows in table for selection/download
+- **Downloaded indicator** — `⤵` en la columna Estado indica canciones ya descargadas (historial persistente); selección (`✓`) y estado descargado son columnas independientes
+- **Import auto-select** — al importar, canciones ya descargadas no se seleccionan automáticamente
+- **Full ↑/↓ navigation** — flechas navegan entre Input de búsqueda, tabla de resultados, y botones de acción
 - **Post-download summary** — shows completion count and "Nueva búsqueda" button without leaving the TUI
 - **Encrypted store** — single file (`data/store.dat`) for search history + download log. Auto-generated `data/.key` (Fernet), `store.dat.bak` before each overwrite, schema validation with automatic fallback to `.bak` on corruption, max 500 entries per list.
 - **No double extraction** — skips pre-extraction HTTP request when title is already known (TUI mode), reducing per-download overhead
 - **Batch storage writes** — dirty-flag pattern: all writes deferred until flush (once per batch or on exit), not per-call
-- **Keyboard interrupt** — Ctrl+C handled gracefully in both batch and interactive modes
-- **Organized output** — saved to `{output}/{YYYY-MM-DD}/`; artist downloads to `{output}/ArtistName/`; `urls.txt` renamed on completion
-- **Summary stats** — `✓ X/Y canciones en Zs` after each batch
+- **Keyboard interrupt** — Ctrl+C handled gracefully during downloads
+- **Organized output** — saved to `{output}/{YYYY-MM-DD}/`
 
 ## Project structure
 
 ```
 src/
-├── main.py           CLI entry point (argparse, batch download)
+├── main.py           CLI entry point (argparse, launches TUI)
 ├── downloader.py     Download logic (yt-dlp wrapper, concurrent batches)
 ├── ui.py             Legacy interactive mode (prompt_toolkit, fallback)
-├── tui_app.py        Textual TUI for `--add` mode (DataTable, progress bars)
+├── tui_app.py        Textual TUI (DataTable, search, import, progress bars)
 ├── storage.py        Encrypted persistence (single store in data/)
 ├── models.py         Data types (DownloadJob)
 └── utils.py          Shared helpers (tqdm_write, sanitize_filename, URL detection)
@@ -117,7 +111,7 @@ data/
 ## Dependencies
 
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — download engine
-- [tqdm](https://github.com/tqdm/tqdm) — progress bars (batch mode)
-- [textual](https://github.com/Textualize/textual) — terminal UI framework for `--add` mode
+- [tqdm](https://github.com/tqdm/tqdm) — progress bars
+- [textual](https://github.com/Textualize/textual) — terminal UI framework
 - [prompt_toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit) — interactive input (legacy `ui.py`)
 - [cryptography](https://github.com/pyca/cryptography) — encrypted search/download history
